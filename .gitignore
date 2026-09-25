@@ -1,0 +1,32 @@
+# Dependencies and generated output
+node_modules/
+dist/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Personal learning data and exported backups
+backups/
+private/
+personal-data/
+uploads/
+*备份*.json
+word-hero-backup*.json
+
+# Photos copied into the project by mistake
+照片*.jpg
+照片*.jpeg
+照片*.png
+*.heic
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

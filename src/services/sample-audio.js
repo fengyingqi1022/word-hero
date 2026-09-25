@@ -1,0 +1,18 @@
+export const TEST_AUDIO = Object.freeze({
+  apple: './assets/audio/apple.wav',
+  brave: './assets/audio/brave.wav',
+  family: './assets/audio/family.wav',
+  library: './assets/audio/library.wav',
+  practice: './assets/audio/practice.wav',
+  season: './assets/audio/season.wav',
+  travel: './assets/audio/travel.wav',
+  weather: './assets/audio/weather.wav',
+  achieve: './assets/audio/achieve.wav',
+  environment: './assets/audio/environment.wav',
+  independent: './assets/audio/independent.wav',
+  knowledge: './assets/audio/knowledge.wav',
+  responsibility: './assets/audio/responsibility.wav',
+  significant: './assets/audio/significant.wav',
+  technology: './assets/audio/technology.wav',
+  volunteer: './assets/audio/volunteer.wav',
+});
