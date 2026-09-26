@@ -68,6 +68,7 @@ export async function importPack(profileId, parsedPack, { seed = false } = {}) {
   const pack = {
     id: id('pack'), profileId, name: parsedPack.proposedPackName,
     sourceFileName: parsedPack.fileName, status: packs.length ? 'locked' : 'active',
+    sourceType: parsedPack.sourceType || (seed ? 'builtin' : 'csv'),
     order: packs.length, wordCount: parsedPack.validRows.length,
     startedAt: null, completedAt: null, createdAt: now, updatedAt: now, isTestData: seed,
   };
@@ -109,6 +110,7 @@ export async function updatePack(profileId, packId, parsedPack) {
       ...pack,
       name: parsedPack.proposedPackName,
       sourceFileName: parsedPack.fileName,
+      sourceType: parsedPack.sourceType || pack.sourceType || 'csv',
       wordCount: parsedPack.validRows.length,
       updatedAt: now,
     });

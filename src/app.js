@@ -9,7 +9,9 @@ import {
   listPacks, listProfiles, listProgress, listWords, markPackStarted, saveProfile,
   saveSession, saveStudyStep, switchActivePack, updatePack, wordsForPack,
 } from './data/repositories.js';
-import { naturalFileSort, prepareCsvImport } from './services/csv-service.js';
+import {
+  buildCsvText, csvFileName, naturalFileSort, prepareCsvImport, preparePastedImport,
+} from './services/csv-service.js';
 import { buildSession, requeueTask } from './services/session-service.js';
 import { loadEnglishVoices, speak, speechAvailable, stopSpeech, testSystemSpeech } from './services/speech-service.js';
 import { TEST_VOCABULARY } from './services/sample-vocabulary.js';
@@ -17,7 +19,10 @@ import { createBackup, restoreBackup } from './services/backup-service.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-const state = { profiles: [], profile: null, session: null, currentWord: null, hintLevel: 0, feedback: null, revealMeaning: false };
+const state = {
+  profiles: [], profile: null, session: null, currentWord: null, hintLevel: 0,
+  feedback: null, revealMeaning: false, pendingPasteImport: null,
+};
 const labels = { locked: '未解锁', available: '已解锁', active: '学习中', completed: '已通关', archived: '已归档' };
 const SOUND_READY_KEY = 'wordHeroSoundReady';
 
@@ -98,14 +103,16 @@ async function renderHome() {
 }
 
 async function renderPacks() {
+  state.pendingPasteImport = null;
   const packs = await listPacks(state.profile.id);
   const deletable = new Map(await Promise.all(packs.map(async (pack) => [pack.id, await canDeleteUnstartedPack(state.profile.id, pack.id)])));
   const rows = packs.map((pack) => {
     const canSwitch = !['active', 'completed', 'archived'].includes(pack.status);
-    const controls = `${canSwitch ? `<button class="ghost compact" data-action="switch-pack" data-pack-id="${escapeHtml(pack.id)}">切换到此词包</button>` : ''}${deletable.get(pack.id) ? `<button class="danger compact" data-action="delete-pack" data-pack-id="${escapeHtml(pack.id)}">删除未开始词包</button>` : ''}`;
-    return `<div class="pack-row"><div><strong>${escapeHtml(pack.name)}</strong><div class="muted">${pack.wordCount} 个单词${pack.isTestData ? ' · 测试数据' : ''}${pack.startedAt ? ' · 已开始' : ''}</div></div><div class="pack-actions"><span class="status ${pack.status}">${labels[pack.status]}</span>${controls ? `<div class="actions">${controls}</div>` : ''}</div></div>`;
+    const sourceLabel = pack.sourceType === 'paste' ? ' · 粘贴创建' : pack.isTestData ? ' · 测试数据' : ' · CSV 导入';
+    const controls = `${canSwitch ? `<button class="ghost compact" data-action="switch-pack" data-pack-id="${escapeHtml(pack.id)}">切换到此词包</button>` : ''}<button class="ghost compact" data-action="export-pack" data-pack-id="${escapeHtml(pack.id)}" data-pack-name="${escapeHtml(pack.name)}">导出 CSV</button>${deletable.get(pack.id) ? `<button class="danger compact" data-action="delete-pack" data-pack-id="${escapeHtml(pack.id)}">删除未开始词包</button>` : ''}`;
+    return `<div class="pack-row"><div><strong>${escapeHtml(pack.name)}</strong><div class="muted">${pack.wordCount} 个单词${sourceLabel}${pack.startedAt ? ' · 已开始' : ''}</div></div><div class="pack-actions"><span class="status ${pack.status}">${labels[pack.status]}</span><div class="actions">${controls}</div></div></div>`;
   }).join('');
-  app.innerHTML = page(`<section class="grid"><article class="card full"><h2>词包管理</h2><p class="muted">CSV 只需要 <code>word</code> 和 <code>meaning</code> 两列。每个文件会创建一个词包；同名导入时会先提醒。</p><div class="dropzone" id="dropzone"><p><strong>拖放 CSV 到这里</strong><br><span class="muted">或从设备中选择一个或多个文件</span></p><input id="csv-input" type="file" accept=".csv,text/csv" multiple hidden><button class="primary" data-action="pick-csv">选择 CSV</button></div><div id="import-report"></div></article><article class="card full"><span class="eyebrow">家长操作</span><h2>${escapeHtml(state.profile.name)}的词包</h2><p class="muted">同一时间只会有一个“学习中”词包。切换或更新不会清除、重算已学单词的复习日期。</p>${rows || '<p class="empty">还没有词包</p>'}</article></section>`, 'packs');
+  app.innerHTML = page(`<section class="grid"><article class="card full"><h2>添加词包</h2><p class="muted">可以直接粘贴“英文＋中文释义”，也可以继续导入一个或多个 CSV 文件。</p><div class="import-methods"><section class="import-method"><span class="eyebrow">推荐</span><h3>粘贴单词</h3><p class="muted">从 Excel、WPS 或两列表格中复制，创建前可以检查预览。</p><button class="primary" data-action="open-paste">粘贴单词</button></section><section class="import-method"><span class="eyebrow">保留原方式</span><h3>导入 CSV</h3><div class="dropzone" id="dropzone"><p><strong>拖放 CSV 到这里</strong><br><span class="muted">或从设备中选择一个或多个文件</span></p><input id="csv-input" type="file" accept=".csv,text/csv" multiple hidden><button class="ghost" data-action="pick-csv">选择 CSV</button></div></section></div><section class="paste-panel" id="paste-panel" hidden><h3>创建粘贴词包</h3><label class="form-row">词包名称<input id="paste-pack-name" maxlength="80" placeholder="例如：五年级 Unit 3"></label><label class="form-row">英文和中文释义<textarea id="paste-words" rows="10" spellcheck="false" placeholder="apple&#9;苹果&#10;important&#9;重要的；重要性大的"></textarea></label><p class="muted">推荐直接从 Excel 或 WPS 复制两列；也支持带 <code>word,meaning</code> 表头的 CSV 文本。</p><div class="actions"><button class="secondary" data-action="preview-paste">检查并预览</button><button class="ghost" data-action="cancel-paste">取消</button></div><div id="paste-preview"></div></section><div id="import-report"></div></article><article class="card full"><span class="eyebrow">家长操作</span><h2>${escapeHtml(state.profile.name)}的词包</h2><p class="muted">同一时间只会有一个“学习中”词包。切换、更新或导出都不会清除、重算已学单词的复习日期。</p>${rows || '<p class="empty">还没有词包</p>'}</article></section>`, 'packs');
   bindDropzone();
 }
 
@@ -118,6 +125,19 @@ function chooseDuplicateImport(existing, parsed) {
   return 'skip';
 }
 
+async function saveParsedPack(parsed) {
+  const packs = await listPacks(state.profile.id);
+  const sameName = packs.filter((pack) => pack.name.trim().toLocaleLowerCase() === parsed.proposedPackName.trim().toLocaleLowerCase()).at(-1);
+  const mode = sameName ? chooseDuplicateImport(sameName, parsed) : 'new';
+  if (mode === 'skip') return { skipped: true, message: `发现同名词包“${parsed.proposedPackName}”，已跳过` };
+  if (mode === 'update') {
+    await updatePack(state.profile.id, sameName.id, parsed);
+    return { skipped: false, message: `已更新“${parsed.proposedPackName}”，学习进度和复习日期保持不变` };
+  }
+  await importPack(state.profile.id, parsed);
+  return { skipped: false, message: `已创建“${parsed.proposedPackName}”：${parsed.validRows.length} 个单词，${parsed.errors.length} 行跳过` };
+}
+
 async function handleFiles(fileList) {
   const files = [...fileList].filter((file) => file.name.toLowerCase().endsWith('.csv')).sort(naturalFileSort);
   if (!files.length) return showToast('请选择 CSV 文件');
@@ -125,22 +145,93 @@ async function handleFiles(fileList) {
   for (const file of files) {
     try {
       const parsed = prepareCsvImport(await file.text(), file.name);
-      const packs = await listPacks(state.profile.id);
-      const sameName = packs.filter((pack) => pack.name.trim().toLocaleLowerCase() === parsed.proposedPackName.trim().toLocaleLowerCase()).at(-1);
-      const mode = sameName ? chooseDuplicateImport(sameName, parsed) : 'new';
-      if (mode === 'skip') { reports.push(`— ${file.name}：发现同名词包，已跳过`); continue; }
-      if (mode === 'update') {
-        await updatePack(state.profile.id, sameName.id, parsed);
-        reports.push(`✓ ${file.name}：已更新同名词包，学习进度和复习日期保持不变`);
-      } else {
-        await importPack(state.profile.id, parsed);
-        reports.push(`✓ ${file.name}：${parsed.validRows.length} 个单词，${parsed.errors.length} 行跳过`);
-      }
+      const result = await saveParsedPack(parsed);
+      reports.push(`${result.skipped ? '—' : '✓'} ${file.name}：${result.message}`);
     } catch (error) { reports.push(`✕ ${file.name}：${error.message}`); }
   }
   showToast(`已处理 ${files.length} 个文件`);
   await renderPacks();
   document.querySelector('#import-report').innerHTML = `<div class="note" style="margin-top:16px">${reports.map(escapeHtml).join('<br>')}</div>`;
+}
+
+function pastePayload() {
+  return {
+    packName: document.querySelector('#paste-pack-name')?.value || '',
+    text: document.querySelector('#paste-words')?.value || '',
+  };
+}
+
+function previewPastedWords() {
+  const preview = document.querySelector('#paste-preview');
+  try {
+    const payload = pastePayload();
+    const parsed = preparePastedImport(payload.text, payload.packName);
+    const signature = `${payload.packName}\u0000${payload.text}`;
+    state.pendingPasteImport = { parsed, signature };
+    const samples = parsed.validRows.slice(0, 8).map((row) => `<div class="preview-row"><strong>${escapeHtml(row.word)}</strong><span>${escapeHtml(row.meaning)}</span></div>`).join('');
+    const remainder = parsed.validRows.length > 8 ? `<p class="muted">还有 ${parsed.validRows.length - 8} 个单词未在预览中展开。</p>` : '';
+    const errors = parsed.errors.length
+      ? `<p class="paste-warning">将跳过 ${parsed.errors.length} 行：${parsed.errors.slice(0, 5).map((error) => `第 ${error.rowNumber} 行${error.message}`).join('；')}</p>`
+      : '';
+    preview.innerHTML = `<div class="paste-preview"><h4>预览：${escapeHtml(parsed.proposedPackName)}</h4><p><strong>${parsed.validRows.length}</strong> 个有效单词 · ${parsed.duplicateRows} 个重复项 · ${parsed.mergedMeanings} 个释义已合并</p><div class="preview-list">${samples}</div>${remainder}${errors}<div class="actions"><button class="primary" data-action="import-paste">确认创建词包</button></div></div>`;
+  } catch (error) {
+    state.pendingPasteImport = null;
+    preview.innerHTML = `<div class="note paste-error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function importPastedWords() {
+  const payload = pastePayload();
+  const signature = `${payload.packName}\u0000${payload.text}`;
+  if (!state.pendingPasteImport || state.pendingPasteImport.signature !== signature) {
+    previewPastedWords();
+    showToast('内容有变化，请检查预览后再确认');
+    return;
+  }
+  try {
+    const result = await saveParsedPack(state.pendingPasteImport.parsed);
+    if (result.skipped) return showToast(result.message);
+    await renderPacks();
+    document.querySelector('#import-report').innerHTML = `<div class="note success-note">${escapeHtml(result.message)}。你可以在词包列表中导出 CSV。</div>`;
+    showToast('粘贴词包已保存');
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function exportPackCsv(packId, packName) {
+  const name = csvFileName(packName);
+  let fileHandle = null;
+  if ('showSaveFilePicker' in window) {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: 'CSV 词包', accept: { 'text/csv': ['.csv'] } }],
+      });
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      fileHandle = null;
+    }
+  }
+
+  const rows = await wordsForPack(state.profile.id, packId);
+  const contents = buildCsvText(rows);
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(contents);
+    await writable.close();
+    showToast(`已保存 ${name}`);
+    return;
+  }
+
+  const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('CSV 已交给浏览器下载');
 }
 
 function bindDropzone() {
@@ -300,6 +391,28 @@ app.addEventListener('click', async (event) => {
   }
   if (action === 'start-study') navigate('study');
   if (action === 'pick-csv') document.querySelector('#csv-input').click();
+  if (action === 'open-paste') {
+    const panel = document.querySelector('#paste-panel');
+    panel.hidden = false;
+    document.querySelector('#paste-pack-name').focus();
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  if (action === 'cancel-paste') {
+    state.pendingPasteImport = null;
+    document.querySelector('#paste-panel').hidden = true;
+  }
+  if (action === 'preview-paste') previewPastedWords();
+  if (action === 'import-paste') {
+    button.disabled = true;
+    await importPastedWords();
+    if (button.isConnected) button.disabled = false;
+  }
+  if (action === 'export-pack') {
+    button.disabled = true;
+    try { await exportPackCsv(button.dataset.packId, button.dataset.packName); }
+    catch (error) { showToast(`导出失败：${error.message}`); }
+    finally { if (button.isConnected) button.disabled = false; }
+  }
   if (action === 'switch-pack') {
     const packs = await listPacks(state.profile.id); const pack = packs.find((item) => item.id === button.dataset.packId);
     if (pack && confirm(`家长确认：把“${pack.name}”设为当前词包吗？\n\n原词包会暂停；已学单词的复习日期保持不变。`)) {
@@ -337,6 +450,14 @@ app.addEventListener('click', async (event) => {
 
 app.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-self-result]'); if (button) await submitResult(button.dataset.selfResult);
+});
+
+app.addEventListener('input', (event) => {
+  if (!event.target.matches('#paste-pack-name, #paste-words')) return;
+  if (!state.pendingPasteImport) return;
+  state.pendingPasteImport = null;
+  const preview = document.querySelector('#paste-preview');
+  if (preview) preview.innerHTML = '<p class="muted preview-stale">内容已修改，请重新“检查并预览”。</p>';
 });
 
 app.addEventListener('keydown', async (event) => {

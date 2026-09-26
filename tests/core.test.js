@@ -4,7 +4,9 @@ import { normalizeAnswer, normalizeWordKey } from '../src/core/normalize.js';
 import { evaluateEnglishAnswer } from '../src/core/answer-evaluator.js';
 import { addLocalDays } from '../src/core/dates.js';
 import { applyAnswer, createProgress } from '../src/core/review-engine.js';
-import { prepareCsvImport } from '../src/services/csv-service.js';
+import {
+  buildCsvText, csvFileName, prepareCsvImport, preparePastedImport,
+} from '../src/services/csv-service.js';
 import { chooseQuestionType } from '../src/services/session-service.js';
 import { speechAvailable } from '../src/services/speech-service.js';
 
@@ -71,4 +73,36 @@ test('CSV supports BOM, quotes, commas, newlines and duplicate merging', () => {
   assert.equal(parsed.validRows.length, 2);
   assert.equal(parsed.validRows[0].meaning, '苹果, 果实；苹果；水果');
   assert.equal(parsed.errors[0].rowNumber, 5);
+});
+
+test('pasted table creates a named pack without requiring a header', () => {
+  const parsed = preparePastedImport('apple\t苹果\r\nimportant\t重要的\r\napple\t水果', '五年级 Unit 3');
+  assert.equal(parsed.proposedPackName, '五年级 Unit 3');
+  assert.equal(parsed.fileName, '五年级 Unit 3.csv');
+  assert.equal(parsed.sourceType, 'paste');
+  assert.equal(parsed.validRows.length, 2);
+  assert.equal(parsed.validRows[0].meaning, '苹果；水果');
+  assert.equal(parsed.mergedMeanings, 1);
+});
+
+test('pasted content accepts Chinese headers and reports original row numbers', () => {
+  const parsed = preparePastedImport('英文\t中文释义\r\napple\t苹果\r\n\t缺少英文', '测试词包');
+  assert.equal(parsed.validRows.length, 1);
+  assert.deepEqual(parsed.errors[0], { rowNumber: 3, message: '缺少英文' });
+});
+
+test('pasted content rejects a single column with a helpful message', () => {
+  assert.throws(
+    () => preparePastedImport('apple\nbanana', '测试词包'),
+    /需要两列/,
+  );
+});
+
+test('generated CSV round-trips quoted content and sanitizes file names', () => {
+  const text = buildCsvText([{ word: 'word', meaning: '词语, "单词"' }]);
+  const parsed = prepareCsvImport(text, '导出.csv');
+  assert.equal(parsed.validRows[0].meaning, '词语, "单词"');
+  assert.equal(csvFileName('Unit 1: A/B?'), 'Unit 1_ A_B_.csv');
+  assert.equal(csvFileName('Unit 1.csv'), 'Unit 1.csv');
+  assert.equal(csvFileName('CON'), '_CON.csv');
 });
