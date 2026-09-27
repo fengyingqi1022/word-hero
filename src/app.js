@@ -1,6 +1,7 @@
 import { QUESTION_TYPES } from './core/config.js';
 import { systemClock } from './core/dates.js';
 import { evaluateEnglishAnswer } from './core/answer-evaluator.js';
+import { normalizeAnswer } from './core/normalize.js';
 import { applyAnswer, markIntroduced } from './core/review-engine.js';
 import { openDatabase, putOne, readAll } from './data/db.js';
 import {
@@ -311,7 +312,10 @@ async function submitResult(result, rawAnswer = '') {
   const packs = await listPacks(state.profile.id); const active = packs.find((item) => item.status === 'active');
   if (active && transition.becameMastered) await completePackIfReady(state.profile.id, active.id);
   const className = summaryResult; const title = result === 'correct' ? '答对了！' : result === 'fuzzy' ? '很接近，再练一次' : '没关系，记住它';
-  document.querySelector('#question-controls').innerHTML = `<div class="feedback ${className}"><strong>${title}</strong><br>正确答案：${escapeHtml(state.currentWord.word)} · ${escapeHtml(state.currentWord.meaning)}</div><div class="actions"><button class="primary" data-action="next-question">下一题</button></div>`;
+  const submittedAnswer = rawAnswer && normalizeAnswer(rawAnswer) !== normalizeAnswer(state.currentWord.word)
+    ? `<br>你的答案：${escapeHtml(rawAnswer.trim())}`
+    : '';
+  document.querySelector('#question-controls').innerHTML = `<div class="feedback ${className}"><strong>${title}</strong>${submittedAnswer}<br>正确答案：${escapeHtml(state.currentWord.word)} · ${escapeHtml(state.currentWord.meaning)}</div><div class="actions"><button class="primary" data-action="next-question">下一题</button></div>`;
   if (soundReady()) playWord(state.currentWord.word);
 }
 
