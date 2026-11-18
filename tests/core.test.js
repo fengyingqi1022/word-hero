@@ -5,7 +5,7 @@ import { evaluateEnglishAnswer } from '../src/core/answer-evaluator.js';
 import { addLocalDays } from '../src/core/dates.js';
 import { applyAnswer, createProgress } from '../src/core/review-engine.js';
 import {
-  buildCsvText, csvFileName, prepareCsvImport, preparePastedImport,
+  buildCsvText, csvFileName, prepareCsvImport, preparePastedImport, splitParsedPack,
 } from '../src/services/csv-service.js';
 import { chooseQuestionType } from '../src/services/session-service.js';
 import { speechAvailable } from '../src/services/speech-service.js';
@@ -27,32 +27,36 @@ test('local date addition crosses month and leap day', () => {
   assert.equal(addLocalDays('2024-02-29', 1), '2024-03-01');
 });
 
-test('two clean answers with English input create mastery', () => {
-  let progress = createProgress('p1', 'apple', '2026-01-01T00:00:00Z');
-  let transition = applyAnswer(progress, { result: 'correct', isEnglishInput: false, isScheduledReview: false, today: '2026-01-01', timestamp: 'a' });
-  progress = transition.progress;
-  transition = applyAnswer(progress, { result: 'correct', isEnglishInput: true, isScheduledReview: false, today: '2026-01-01', timestamp: 'b' });
+test('one clean English answer completes a word without scheduling review', () => {
+  const progress = createProgress('p1', 'apple', '2026-01-01T00:00:00Z');
+  const transition = applyAnswer(progress, { result: 'correct', isEnglishInput: true, isScheduledReview: false, today: '2026-01-01', timestamp: 'a' });
   assert.equal(transition.progress.currentlyMastered, true);
-  assert.equal(transition.progress.nextReviewDate, '2026-01-02');
+  assert.equal(transition.progress.nextReviewDate, null);
+  assert.equal(transition.needsRemediation, false);
 });
 
-test('review stages advance, fuzzy falls back and wrong resets', () => {
-  let progress = { ...createProgress('p1', 'apple'), currentlyMastered: true, reviewStage: 0, nextReviewDate: '2026-01-01' };
+test('light pack answers never schedule mandatory reviews', () => {
+  let progress = { ...createProgress('p1', 'apple'), currentlyMastered: true };
   progress = applyAnswer(progress, { result: 'correct', isEnglishInput: true, isScheduledReview: true, today: '2026-01-01', timestamp: 'a' }).progress;
-  assert.equal(progress.reviewStage, 1);
-  assert.equal(progress.nextReviewDate, '2026-01-03');
+  assert.equal(progress.reviewStage, null);
+  assert.equal(progress.nextReviewDate, null);
   progress = applyAnswer(progress, { result: 'fuzzy', isEnglishInput: true, isScheduledReview: true, today: '2026-01-03', timestamp: 'b' }).progress;
-  assert.equal(progress.reviewStage, 0);
+  assert.equal(progress.currentlyMastered, true);
+  assert.equal(progress.nextReviewDate, null);
   progress = applyAnswer(progress, { result: 'wrong', isEnglishInput: true, isScheduledReview: true, today: '2026-01-03', timestamp: 'c' }).progress;
   assert.equal(progress.currentlyMastered, false);
   assert.equal(progress.reviewStage, null);
 });
 
-test('stage 6 completion becomes long-term mastery', () => {
-  const progress = { ...createProgress('p1', 'apple'), currentlyMastered: true, reviewStage: 6, nextReviewDate: '2026-03-01' };
-  const next = applyAnswer(progress, { result: 'correct', isEnglishInput: true, isScheduledReview: true, today: '2026-03-01', timestamp: 'a' }).progress;
-  assert.equal(next.longTermMastered, true);
-  assert.equal(next.nextReviewDate, '2026-05-30');
+test('imports split into packs of five without losing order', () => {
+  const parsed = {
+    proposedPackName: 'Unit 3',
+    validRows: Array.from({ length: 12 }, (_, index) => ({ word: `word${index + 1}` })),
+  };
+  const parts = splitParsedPack(parsed);
+  assert.deepEqual(parts.map((part) => part.validRows.length), [5, 5, 2]);
+  assert.deepEqual(parts.map((part) => part.proposedPackName), ['Unit 3 · 第1包', 'Unit 3 · 第2包', 'Unit 3 · 第3包']);
+  assert.equal(parts.flatMap((part) => part.validRows).at(-1).word, 'word12');
 });
 
 test('question selector requires English input and degrades without speech', () => {

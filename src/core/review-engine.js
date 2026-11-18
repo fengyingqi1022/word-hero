@@ -1,5 +1,4 @@
 import { CONFIG } from './config.js';
-import { addLocalDays } from './dates.js';
 
 export function createProgress(profileId, wordKey, now = new Date().toISOString()) {
   return {
@@ -25,25 +24,13 @@ export function applyAnswer(progress, { result, isEnglishInput, isScheduledRevie
     if (!next.currentlyMastered && next.consecutiveCorrect >= CONFIG.masteryCorrectStreak && next.hasEnglishInputSuccess) {
       next.currentlyMastered = true;
       next.longTermMastered = false;
-      next.reviewStage = 0;
-      next.nextReviewDate = addLocalDays(today, CONFIG.reviewIntervalsDays[0]);
+      next.reviewStage = null;
+      next.nextReviewDate = null;
       becameMastered = true;
-    } else if (next.currentlyMastered && isScheduledReview) {
-      if (next.reviewStage === 6) {
-        next.longTermMastered = true;
-        next.nextReviewDate = addLocalDays(today, CONFIG.longTermReviewDays);
-      } else {
-        next.reviewStage = Math.min((next.reviewStage ?? 0) + 1, 6);
-        next.nextReviewDate = addLocalDays(today, CONFIG.reviewIntervalsDays[next.reviewStage]);
-      }
     }
   } else if (result === 'fuzzy') {
     next.fuzzyCount += 1;
     next.consecutiveCorrect = 0;
-    if (next.currentlyMastered) {
-      next.reviewStage = Math.max((next.reviewStage ?? 0) - 1, 0);
-      next.nextReviewDate = addLocalDays(today, CONFIG.reviewIntervalsDays[next.reviewStage]);
-    }
   } else {
     next.wrongCount += 1;
     next.currentlyMastered = false;

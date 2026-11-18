@@ -1,4 +1,5 @@
 import { mergeMeanings, normalizeWordKey } from '../core/normalize.js';
+import { CONFIG } from '../core/config.js';
 
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 10000;
@@ -72,6 +73,18 @@ export function prepareCsvImport(text, fileName = '未命名词包.csv') {
     proposedPackName: fileName.replace(/\.csv$/i, ''),
     validRows: [...words.values()], emptyRows, duplicateRows, mergedMeanings, errors,
   };
+}
+
+export function splitParsedPack(parsedPack, packSize = CONFIG.packSize) {
+  if (!Number.isInteger(packSize) || packSize < 1) throw new Error('词包大小必须是正整数');
+  const total = Math.ceil(parsedPack.validRows.length / packSize);
+  return Array.from({ length: total }, (_, index) => ({
+    ...parsedPack,
+    proposedPackName: total === 1 ? parsedPack.proposedPackName : `${parsedPack.proposedPackName} · 第${index + 1}包`,
+    validRows: parsedPack.validRows.slice(index * packSize, (index + 1) * packSize),
+    partNumber: index + 1,
+    partCount: total,
+  }));
 }
 
 function csvCell(value) {

@@ -31,6 +31,69 @@ export async function ensureDefaultProfiles() {
   return defaults;
 }
 
+export async function migrateToLightPackMode({ force = false } = {}) {
+  const marker = await getOne('meta', 'lightPackModeVersion');
+  if (!force && marker?.value >= CONFIG.lightPackModeVersion) return false;
+
+  const [profiles, packs, links, progress, attempts, sessions] = await Promise.all([
+    readAll('profiles'), readAll('packs'), readAll('packWords'), readAll('progress'),
+    readAll('attempts'), readAll('sessions'),
+  ]);
+  const targetIds = new Set(profiles.filter((profile) => profile.grade === 'grade5').map((profile) => profile.id));
+  const now = isoNow();
+  const replacementPacks = [];
+  const replacementLinks = [];
+
+  for (const profileId of targetIds) {
+    const sourcePacks = packs.filter((pack) => pack.profileId === profileId).sort((a, b) => a.order - b.order);
+    for (const sourcePack of sourcePacks) {
+      const sourceLinks = links.filter((link) => link.profileId === profileId && link.packId === sourcePack.id && !link.archived)
+        .sort((a, b) => a.position - b.position);
+      const chunks = [];
+      for (let index = 0; index < sourceLinks.length; index += CONFIG.packSize) chunks.push(sourceLinks.slice(index, index + CONFIG.packSize));
+      if (!chunks.length) chunks.push([]);
+      chunks.forEach((chunk, index) => {
+        const packId = index === 0 ? sourcePack.id : id('pack');
+        const name = chunks.length === 1 ? sourcePack.name : `${sourcePack.name} · 第${index + 1}包`;
+        replacementPacks.push({
+          ...sourcePack, id: packId, name, order: replacementPacks.filter((item) => item.profileId === profileId).length,
+          wordCount: chunk.length, status: sourcePack.status === 'archived' ? 'archived' : 'available',
+          startedAt: null, completedAt: null, updatedAt: now,
+        });
+        chunk.forEach((link, position) => replacementLinks.push({ ...link, packId, position, archived: false }));
+      });
+    }
+    const first = replacementPacks.find((pack) => pack.profileId === profileId && pack.status !== 'archived');
+    if (first) first.status = 'active';
+  }
+
+  await runTransaction(['meta', 'profiles', 'packs', 'packWords', 'progress', 'attempts', 'sessions'], async (tx) => {
+    const profileStore = tx.objectStore('profiles');
+    const packStore = tx.objectStore('packs');
+    const linkStore = tx.objectStore('packWords');
+    const progressStore = tx.objectStore('progress');
+    const attemptStore = tx.objectStore('attempts');
+    const sessionStore = tx.objectStore('sessions');
+
+    for (const profile of profiles.filter((item) => targetIds.has(item.id))) {
+      await requestAsPromise(profileStore.put({
+        ...profile, settings: { ...profile.settings, newWordsPerSession: CONFIG.packSize }, updatedAt: now,
+      }));
+    }
+    for (const pack of packs.filter((item) => targetIds.has(item.profileId))) await requestAsPromise(packStore.delete(pack.id));
+    for (const link of links.filter((item) => targetIds.has(item.profileId))) await requestAsPromise(linkStore.delete([link.packId, link.wordKey]));
+    for (const pack of replacementPacks) await requestAsPromise(packStore.put(pack));
+    for (const link of replacementLinks) await requestAsPromise(linkStore.put(link));
+    for (const item of progress.filter((entry) => targetIds.has(entry.profileId))) {
+      await requestAsPromise(progressStore.put(createProgress(item.profileId, item.wordKey, now)));
+    }
+    for (const attempt of attempts.filter((item) => targetIds.has(item.profileId))) await requestAsPromise(attemptStore.delete(attempt.id));
+    for (const session of sessions.filter((item) => targetIds.has(item.profileId))) await requestAsPromise(sessionStore.delete(session.id));
+    await requestAsPromise(tx.objectStore('meta').put({ key: 'lightPackModeVersion', value: CONFIG.lightPackModeVersion }));
+  });
+  return true;
+}
+
 export const listProfiles = () => readAll('profiles');
 export const getProfile = (profileId) => getOne('profiles', profileId);
 export const saveProfile = (profile) => putOne('profiles', { ...profile, updatedAt: isoNow() });
@@ -67,7 +130,7 @@ export async function importPack(profileId, parsedPack, { seed = false } = {}) {
   const now = isoNow();
   const pack = {
     id: id('pack'), profileId, name: parsedPack.proposedPackName,
-    sourceFileName: parsedPack.fileName, status: packs.length ? 'locked' : 'active',
+    sourceFileName: parsedPack.fileName, status: packs.some((item) => item.status === 'active') ? 'available' : 'active',
     sourceType: parsedPack.sourceType || (seed ? 'builtin' : 'csv'),
     order: packs.length, wordCount: parsedPack.validRows.length,
     startedAt: null, completedAt: null, createdAt: now, updatedAt: now, isTestData: seed,
@@ -235,6 +298,14 @@ export async function completePackIfReady(profileId, packId) {
   return true;
 }
 
+export async function completePack(profileId, packId) {
+  const pack = await getOne('packs', packId);
+  if (!pack || pack.profileId !== profileId || pack.status === 'completed') return false;
+  const now = isoNow();
+  await putOne('packs', { ...pack, status: 'completed', completedAt: pack.completedAt || now, updatedAt: now });
+  return true;
+}
+
 export async function activateNextPack(profileId) {
   const packs = await listPacks(profileId);
   const available = packs.find((item) => item.status === 'available');
@@ -244,15 +315,20 @@ export async function activateNextPack(profileId) {
 }
 
 export async function clearProfileProgress(profileId) {
-  const progress = await listProgress(profileId);
+  const [progress, packs] = await Promise.all([listProgress(profileId), listPacks(profileId)]);
   const now = isoNow();
-  await runTransaction(['progress', 'attempts', 'sessions'], async (tx) => {
-    progress.forEach((item) => tx.objectStore('progress').put(createProgress(profileId, item.wordKey, now)));
+  const first = packs.find((item) => item.status !== 'archived');
+  await runTransaction(['packs', 'progress', 'attempts', 'sessions'], async (tx) => {
+    for (const pack of packs) {
+      const status = pack.status === 'archived' ? 'archived' : pack.id === first?.id ? 'active' : 'available';
+      await requestAsPromise(tx.objectStore('packs').put({ ...pack, status, startedAt: null, completedAt: null, updatedAt: now }));
+    }
+    for (const item of progress) await requestAsPromise(tx.objectStore('progress').put(createProgress(profileId, item.wordKey, now)));
     for (const attempt of await requestAsPromise(tx.objectStore('attempts').getAll())) {
-      if (attempt.profileId === profileId) tx.objectStore('attempts').delete(attempt.id);
+      if (attempt.profileId === profileId) await requestAsPromise(tx.objectStore('attempts').delete(attempt.id));
     }
     for (const session of await requestAsPromise(tx.objectStore('sessions').getAll())) {
-      if (session.profileId === profileId) tx.objectStore('sessions').delete(session.id);
+      if (session.profileId === profileId) await requestAsPromise(tx.objectStore('sessions').delete(session.id));
     }
   });
 }
